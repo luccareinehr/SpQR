@@ -18,3 +18,4 @@ lm-evaluation-harness/lm_eval/datasets/*/__pycache__/
 lm-evaluation-harness/lm_eval/*/__pycache__/
 lm-evaluation-harness/lm_eval/__pycache__/
 lm-evaluation-harness/lm_cache
+models/*
