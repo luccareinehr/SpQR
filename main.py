@@ -192,18 +192,24 @@ def quantize_spqr(model, dataloader, args, device):
                 spqr_handlers[sublayer_name] = SPQRUtil(subset[sublayer_name])
 
             def add_batch(name):
+                # computes the sublayer's Hessian from input data
                 def tmp(_, inp, out):
                     spqr_handlers[name].add_batch(inp[0].data)
 
                 return tmp
 
+            # add forward hooks to auto-calculate a sublayer's Hessian (used in quantization) during the non-quantized model evaluation
             handles = []
             for sublayer_name in subset:
-                handles.append(subset[sublayer_name].register_forward_hook(add_batch(sublayer_name)))
+                handles.append(subset[sublayer_name].register_forward_hook(add_batch(sublayer_name))) # when add_batch is called as a hook, the arguments inp and out are passed as a tuple (inp, out) by PyTorch
+            
+            # evaluate the non-quantized model
             for j in trange(
                 args.nsamples, desc="calc outs before quantization", leave=False
             ):
                 outs[j] = layer(inps[j].unsqueeze(0), **forward_args)[0]
+            
+            # remove forward hooks, to not recalculate Hessians during the quantized model evaluation
             for h in handles:
                 h.remove()
 
