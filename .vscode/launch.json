@@ -11,8 +11,8 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": true,
-            "args": ["/Users/lucrei01/SpQR/models/open_llama_3b_v2",
-                    "custom", "--custom_data_path=/Users/lucrei01/SpQR/data/red_pajama_n=1024.pth",
+            "args": ["/Users/lucrei01/SpQR/models/open_llama_3b_v2",//"/Users/lucrei01/SpQR/models/falcon-7b"
+                    "custom", "--custom_data_path=/Users/lucrei01/SpQR/data/red_pajama_n=1024.pth",//"--custom_data_path=/Users/lucrei01/SpQR/data/refined_web_n=128.pth",
                     "--wbits", "4",
                     "--groupsize", "16",
                     "--perchannel",
@@ -23,7 +23,8 @@
                     "act_order",
                     "--percdamp", "1e0",
                     "--nsamples", "128",
-                    "--wandb"]
+                    "--wandb",
+                    "--dtype", "float32"] // open llama auto dtype is float16, which is not supported on cpus via PyTorch
         }
     ]
 }

@@ -18,7 +18,7 @@ class SPQRUtil:
         self.H = torch.zeros((self.columns, self.columns), device=self.dev)
         self.nsamples = 0
 
-    def add_batch(self, inp):
+    def add_batch(self, inp): # Same code as in GPTQ (accumulated Hessian calculation)
         assert self.H is not None, "Already ran quantization; cannot add more data batches"
         if len(inp.shape) == 2:
             inp = inp.unsqueeze(0)
@@ -28,9 +28,14 @@ class SPQRUtil:
             inp = inp.reshape((-1, inp.shape[-1]))
         inp = inp.t()
 
-        self.H *= self.nsamples / (self.nsamples + tmp)
+        # Hessian is scaled down using a correction factor to adjust for the number of samples, 
+        # to update more smoothly as new data batches are added:
+        self.H *= self.nsamples / (self.nsamples + tmp) 
+        # The nsambles variable is updated by adding the number of samples in the current batch ('tmp'):
         self.nsamples += tmp
+        # The input data batch is normalized:
         inp = math.sqrt(2 / self.nsamples) * inp.float()
+        # H = XX':
         self.H += inp.matmul(inp.t())
 
     def quantize(
@@ -75,7 +80,8 @@ class SPQRUtil:
         weight = self.layer.weight.detach().to(dtype=torch.float, copy=True)
         perm = get_permutation_order(self.H, weight, permutation_order)
         weight = weight[:, perm]  # note: weight is modified
-        H = self.H
+                
+        H = self.H # Get accumulated hessian calculated during non-quantized inference
         if keep_H:
             H = H.clone()  # protect from in-place changes
         else:
@@ -83,15 +89,18 @@ class SPQRUtil:
 
         H = H[perm][:, perm]
         self.dead = torch.diag(H) == 0  # indices of input features that do not affect outputs
+        
+        # Regularize matrix diagonal for inversion with percdamp value
         if percdamp > 0:
             ix = torch.arange(len(H), device=weight.device)
             H[ix, ix] += percdamp * abs(torch.diag(H)).mean()
             del ix
+        
         H[self.dead, self.dead] = 1
         weight[:, self.dead] = 0
-        H_inv = torch.cholesky_inverse(torch.linalg.cholesky(H))
-        H_inv_cho = torch.linalg.cholesky(H_inv, upper=True)
-        H_inv_cho_diag = torch.diag(H_inv_cho)
+        H_inv = torch.cholesky_inverse(torch.linalg.cholesky(H)) # compute H^(-1)
+        H_inv_cho = torch.linalg.cholesky(H_inv, upper=True) # Compute L, where (L)(L^T) = H^(-1)
+        H_inv_cho_diag = torch.diag(H_inv_cho) # Extract the diagonal of L as a vector
         del H
 
         quantizer = Quantizer()
@@ -106,8 +115,10 @@ class SPQRUtil:
         outlier_column_indices = torch.empty(0, dtype=torch.int64, device=weight.device)
         del H_inv
 
+        # scale = average value of (variance/diag^2) for all lines [i.e., compute the variance per-line and divide by the corresponding diagonal value]
         outlier_scale = (weight.var(dim=0) / torch.diag(H_inv_cho).square()).mean().item()
         unstructured_outlier_threshold = outlier_relative_threshold * outlier_scale
+        
         in_group_index = -1  # index of current group of input features, for group quantizer purposes
 
         quantization_errors = torch.zeros_like(weight)
