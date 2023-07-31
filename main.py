@@ -515,7 +515,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--offload_activations",
         action="store_true",
-        help="Whether to skip computation of out loss.",
+        help="Offload activations to RAM to save GPU memory.",
     )
     parser.add_argument(
         "--dtype",
