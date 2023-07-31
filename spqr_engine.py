@@ -178,6 +178,7 @@ class SPQRUtil:
                     weight_i_quantized_wo_outliers = quantize(
                         (weight[:, column_index] * (1 - is_outlier)).unsqueeze(1), quantizer.scale, quantizer.zero, quantizer.maxq
                     ).reshape_as(weight[:, column_index])
+                    # include raw outliers
                     weight_i_quantized = (
                         weight_i_quantized_wo_outliers * (1 - is_outlier) + weight[:, column_index] * is_outlier
                     )  # [out_dim]
@@ -186,18 +187,18 @@ class SPQRUtil:
                     delta_weight_i = weight[:, column_index] - weight_i_quantized  # [out_dim]
                     quantization_errors[:, column_index] = delta_weight_i / H_inv_cho[column_index, column_index]  # [out_dim]
 
-                weight[:, column_index] = weight_i_quantized
+                weight[:, column_index] = weight_i_quantized # update column with quantized weight
                 weight[:, column_index + 1 : block_end].addr_(
                     quantization_errors[:, column_index],
                     H_inv_cho[column_index, column_index + 1 : block_end],
                     alpha=-1,
-                )
+                ) # on all subsequent columns, subtract [error]*H_inv_cho
 
             weight[:, block_end:].addmm_(
                 quantization_errors[:, block_start:block_end],
                 H_inv_cho[block_start:block_end, block_end:],
                 alpha=-1,
-            )
+            ) # on all subsequent blocks, subtract [error]*H_inv_cho
 
         if permutation_order != "identity":
             invperm = torch.argsort(perm)

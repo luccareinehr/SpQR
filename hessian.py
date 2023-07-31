@@ -1,7 +1,6 @@
 '''Calculates the Hessian for a sublayer'''
 import torch
 from tqdm import tqdm, trange
-from contextlib import suppress
 
 from spqr_engine import SPQRUtil
 from main import get_inps, find_sublayers, get_layers
@@ -23,6 +22,7 @@ def hessian(model, sublayer_name, dataloader, args, device=torch.device("cpu")):
 
     Returns:
         torch.Tensor: n-by-n matrix with the sublayer's Hessian at the input dataset
+        int: total number of samples used to compute the Hessian
     """
     print("\nCalculating Hessian from inputs...")
 
@@ -54,7 +54,7 @@ def hessian(model, sublayer_name, dataloader, args, device=torch.device("cpu")):
     
     handles = (
         sublayer.register_forward_pre_hook(add_batch(args.sublayer)),
-        #sublayer.register_forward_pre_hook(stop_inference),
+        sublayer.register_forward_pre_hook(stop_inference),
     )
 
     # evaluate the non-quantized model
@@ -66,14 +66,9 @@ def hessian(model, sublayer_name, dataloader, args, device=torch.device("cpu")):
             _ = layer(inps[j].unsqueeze(0), **forward_args)[0]
         except StopModelInference:
             tqdm.write(f"Stopping inference calculation at layer {sublayer_name} in iteration {j}/{args.nsamples}")
-            continue
-
-            # run model until StopModelInference is found
-            #with suppress(StopModelInference):
-                #_ = layer(inps[j].unsqueeze(0), **forward_args)[0]
 
     for h in handles:
         h.remove()
 
-    return spqr_handler_sublayer.H
+    return spqr_handler_sublayer.H, spqr_handler_sublayer.nsamples
     

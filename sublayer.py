@@ -9,151 +9,6 @@ from datautils import get_loaders
 from spqr_engine import SPQRUtil
 from main import get_inps, find_sublayers, get_layers
 
-def quantize_spqr_sublayer(model, dataloader, args, device):
-    print("\nStarting SPQR quantization ...")
-
-    inps, forward_args = get_inps(model, dataloader, args, device)
-    outs = torch.zeros_like(inps)
-
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
-
-    quantizers = {}
-
-    normal_outlier_count_global, w_count_global = 0, 0
-
-    sublayer_name = args.sublayer
-    layer_number = int(sublayer_name.split(".")[2])
-    sublayer = find_sublayers(model)[sublayer_name]
-    layer = get_layers(model)[layer_number]
-
-    print(f"\n---------------- Layer {layer_number}, sublayer {sublayer_name} ----------------")
-    normal_outlier_count, w_count = 0, 0
-    #start_time = time.time()
-
-    # sublayer_dev_original = next(sublayer.parameters()).device  # quantized layer will return there
-    # print(f"{sublayer_dev_original=}")
-    # if sublayer_dev_original.type != "cuda":
-    #     sublayer = sublayer.to(device)
-    # else:
-    #     sublayer = layers[i]
-    sublayer_dev = next(sublayer.parameters()).device
-    # all_sublayers = find_sublayers(layer)
-
-    inps = inps.to(sublayer_dev)
-
-    spqr_handler = SPQRUtil(sublayer)
-
-    def add_batch(name):
-        # computes the sublayer's Hessian from input data
-        def tmp(_, inp, out):
-            spqr_handler.add_batch(inp[0].data)
-        return tmp
-
-    # add forward hook to auto-calculate a sublayer's Hessian (used in quantization) during the non-quantized model evaluation
-    handle = sublayer.register_forward_hook(add_batch(sublayer_name)) # when add_batch is called as a hook, the arguments inp and out are passed as a tuple (inp, out) by PyTorch
-    
-    # evaluate the non-quantized model
-    for j in trange(
-        args.nsamples, desc="calc outs (and Hessian) before quantization", leave=False
-    ):
-        outs[j] = layer(inps[j].unsqueeze(0), **forward_args)[0]
-    
-    # remove forward hook, to not recalculate Hessians during the quantized model evaluation
-    handle.remove()
-
-    if args.offload_activations:
-        inps = inps.cpu()
-        outs = outs.cpu()
-        torch.cuda.empty_cache()
-
-    print(f"Quantizing module {sublayer_name}")
-    quantized = spqr_handler.quantize(
-        percdamp=args.percdamp,
-        bits=args.wbits,
-        groupsize=args.groupsize,
-        sym=args.sym,
-        perchannel=args.perchannel,
-        qq_groupsize=args.qq_groupsize,
-        round_zero=args.round_zero,
-        qq_scale_bits=args.qq_scale_bits,
-        qq_zero_bits=args.qq_zero_bits,
-        qq_zero_sym=args.qq_zero_sym,
-        outlier_relative_threshold=args.outlier_threshold,
-        permutation_order=args.permutation_order,
-        simplified_outliers=args.simplified_outliers,
-    )
-
-    # spqr_handler.layer.weight.data = quantized.weight.to(
-    #     spqr_handler.layer.weight.data.dtype
-    # )
-
-    return quantized
-
-    # quantizers["model.layers.%d.%s" % (i, sublayer_name)] = ()  # to be updated
-
-                # OUTLIER STATS per module:
-        #         normal_outliers_count = quantized.unstructured_outlier_mask.to(torch.int32).sum()
-        #         stats_payload[f"n_{sublayer_name}_ol_share"] = \
-        #             (normal_outliers_count / quantized.weight.numel()).item()
-        #         normal_outlier_count += normal_outliers_count.item()
-        #         w_count += quantized.weight.numel()
-
-        # # upload inputs back to the device
-        # inps = inps.to(layer_dev)
-        # outs = outs.to(layer_dev)
-
-    #     out_losses = []
-    #     for j in trange(args.nsamples, desc="calc outs after quantization", leave=False):
-    #         outs_batch = layer(inps[j].unsqueeze(0), **forward_args)[0]
-    #         if not args.skip_out_loss:
-    #             outs_batch_loss = (outs_batch - outs[j]).float().square().view(outs_batch.shape[0], -1)\
-    #                 .mean(dim=1).sqrt()
-    #             outs_batch_loss /= outs_batch.view(outs_batch.shape[0], -1).float().std(dim=1)
-    #             out_losses.append(outs_batch_loss.item())
-    #         outs[j] = outs_batch
-    #     del outs_batch
-
-    #     layers[i] = layer.to(layer_dev_original)
-    #     del layer
-    #     del spqr_handlers
-    #     torch.cuda.empty_cache()
-
-    #     inps, outs = outs, inps
-
-    #     # Logging
-    #     #stats_payload["layer_time"] = time.time() - start_time
-    #     stats_payload["ol_share"] = normal_outlier_count / max(w_count, 1)
-    #     stats_payload["out_loss"] = torch.mean(torch.Tensor(out_losses)).item()
-    #     stats_payload["Step"] = i
-
-    #     normal_outlier_count_global += normal_outlier_count
-    #     w_count_global += w_count
-
-    #     print(stats_payload)
-
-    # print("=====================\nFinal stats:")
-    # print(f"global_ol_share:  {normal_outlier_count_global / w_count_global:.3%}")
-
-    # wbits_avg = get_average_number_of_bits(
-    #     wbits=args.wbits,
-    #     qq_scale_bits=args.qq_scale_bits,
-    #     qq_zero_bits=args.qq_zero_bits,
-    #     qqq_scale_bits=16,
-    #     qqq_zero_bits=16,
-    #     groupsize=args.groupsize,
-    #     qq_groupsize=args.qq_groupsize,
-    #     round_zero=args.round_zero,
-    #     global_ol_n_share=normal_outlier_count_global / w_count_global,
-    # )
-
-    # if args.wandb:
-    #     wandb.log({"outlier_share": normal_outlier_count_global / w_count_global})
-    #     wandb.log({"wbits_avg": wbits_avg})
-
-    # model.config.use_cache = use_cache
-    # return quantizers, wbits_avg
-
 if __name__ == "__main__":
     import argparse
 
@@ -317,7 +172,7 @@ if __name__ == "__main__":
     model = get_model(args.model_path, args.dtype).train(False)
 
     print("\n============ Quantizing model... ============")
-    print("Loading data ...")
+    print("Loading data...")
     dataloader, _ = get_loaders(
         args.dataset,
         custom_data_path=args.custom_data_path,
@@ -326,9 +181,49 @@ if __name__ == "__main__":
         model_path=args.model_path,
         seqlen=model.seqlen,
     )
-    # quantization_result = quantize_spqr_sublayer(model, dataloader, args, device)
+    print("Data loaded!")
+    
+    sublayer = find_sublayers(model)[args.sublayer]
+    spqr_handler = SPQRUtil(sublayer)
+
+    # calculate hessian
     from hessian import hessian
-    print(
-        hessian(model, args.sublayer, dataloader, args)
+    spqr_handler.H, spqr_handler.nsamples = hessian(model, args.sublayer, dataloader, args)
+
+    # quantize given sublayer
+    not_quantized = sublayer.weight.data.clone()
+
+    print(f"Quantizing module {args.sublayer}")
+    quantization_result = spqr_handler.quantize(
+        percdamp=args.percdamp,
+        bits=args.wbits,
+        groupsize=args.groupsize,
+        sym=args.sym,
+        perchannel=args.perchannel,
+        qq_groupsize=args.qq_groupsize,
+        round_zero=args.round_zero,
+        qq_scale_bits=args.qq_scale_bits,
+        qq_zero_bits=args.qq_zero_bits,
+        qq_zero_sym=args.qq_zero_sym,
+        outlier_relative_threshold=args.outlier_threshold,
+        permutation_order=args.permutation_order,
+        simplified_outliers=args.simplified_outliers,
     )
 
+    quantized = quantization_result.weight.to(
+        spqr_handler.layer.weight.data.dtype
+    ).data # FIXME: quantization_result is giving the de-quantized version of the quantized layer (thus, fp32)
+
+    # print results
+    torch.set_printoptions(precision=10)
+    print(f"Pre-quantization: {not_quantized}")
+    print(f"Post-quantization: {quantized}")
+
+    print("Save results? [y/N]")
+    if input().lower() in ("yes", "y"):
+        torch.save(not_quantized, f"{args.sublayer}_not_quantized.pt")
+        torch.save(quantized, f"{args.sublayer}_not_quantized.pt")
+        # TODO: this is not saving the outliers in CSR format,
+        # neither the 1st- and 2nd-order group statistics
+        # TODO: this is not saving in memory using the correct structure
+        # (i.e., what information comes first in the memory file?)
