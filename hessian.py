@@ -1,9 +1,14 @@
 '''Calculates the Hessian for a sublayer'''
 import torch
-from tqdm import trange
+from tqdm import tqdm, trange
+from contextlib import suppress
 
 from spqr_engine import SPQRUtil
 from main import get_inps, find_sublayers, get_layers
+
+class StopModelInference(Exception):
+    '''Custom class to stop model inference on a target layer.'''
+    pass
 
 @torch.no_grad() # note: without this, memory will leak
 def hessian(model, sublayer_name, dataloader, args, device=torch.device("cpu")):
@@ -35,22 +40,40 @@ def hessian(model, sublayer_name, dataloader, args, device=torch.device("cpu")):
     use_cache = model.config.use_cache
     model.config.use_cache = False
 
-    # add forward hook to layer
+    # add forward hooks to layer | TODO: change these to pre-hook?
     def add_batch(name):
         # computes the sublayer's Hessian from input data
-        def tmp(_, inp, out):
+        def tmp(_, inp):
             spqr_handler_sublayer.add_batch(inp[0].data)
         return tmp
     
-    handle = sublayer.register_forward_hook(add_batch(args.sublayer))
+    def stop_inference(_, inp):
+        # raise flag to stop model inference at a certain layer
+        # to prevent computations useless for calculating the Hessian
+        raise StopModelInference()
+    
+    handles = (
+        sublayer.register_forward_pre_hook(add_batch(args.sublayer)),
+        #sublayer.register_forward_pre_hook(stop_inference),
+    )
 
     # evaluate the non-quantized model
     for j in trange(
         args.nsamples, desc="calc outs (and Hessian) before quantization", leave=False
     ):
-        outs[j] = layer(inps[j].unsqueeze(0), **forward_args)[0]
+        try:
+            #outs[j] = layer(inps[j].unsqueeze(0), **forward_args)[0]
+            _ = layer(inps[j].unsqueeze(0), **forward_args)[0]
+        except StopModelInference:
+            tqdm.write(f"Stopping inference calculation at layer {sublayer_name} in iteration {j}/{args.nsamples}")
+            continue
 
-    handle.remove()
+            # run model until StopModelInference is found
+            #with suppress(StopModelInference):
+                #_ = layer(inps[j].unsqueeze(0), **forward_args)[0]
+
+    for h in handles:
+        h.remove()
 
     return spqr_handler_sublayer.H
     

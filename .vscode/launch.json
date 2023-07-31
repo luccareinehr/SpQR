@@ -24,7 +24,9 @@
                     "--percdamp", "1e0",
                     "--nsamples", "128",
                     "--wandb",
-                    "--dtype", "float32"] // open llama auto dtype is float16, which is not supported on cpus via PyTorch
+                    "--dtype", "float32", // open llama auto dtype is float16, which is not supported on cpus via PyTorch
+                    "--sublayer", "model.layers.0.self_attn.q_proj",
+                ]
         }
     ]
 }
