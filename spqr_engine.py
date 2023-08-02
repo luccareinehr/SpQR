@@ -123,7 +123,9 @@ class SPQRUtil:
 
         quantization_errors = torch.zeros_like(weight)
         unstructured_outlier_mask = torch.zeros_like(weight, dtype=torch.bool)
+
         Q = torch.zeros_like(weight) # weight matrix with quantized values
+        quantizers = [] # list with quantizer stats for each group
 
         block_start_iter = range(0, in_dim - keep_last_columns, blocksize)
         block_start_iter = tqdm(block_start_iter, leave=False) if verbose else block_start_iter
@@ -163,6 +165,19 @@ class SPQRUtil:
                         del mean_over_non_outliers, group_weight_without_outliers, non_outlier_mask
 
                     del group_weight
+
+                    # save quantization group statistics
+                    # to access, use: quantizers[group_index]['q']['scale'] etc.
+                    # 'q' is for 1st-order statistics, 'qq' for 2nd-order statistics
+                    quantizers.append(
+                        {
+                            'q': {'scale': quantizer.scale, 'zero': quantizer.zero},
+                            'qq_scale': {'scale': quantizer.qq_scale.scale, 'zero': quantizer.qq_scale.zero},
+                            'qq_zero': {'scale': quantizer.qq_zero.scale, 'zero': quantizer.qq_zero.zero},
+                        }
+                    )
+                    # do the stat tensors change when a new iteration happens? or do they stay the same, as if they were cloned?
+                    # it looks like they don't change! at least not when I tested it
 
                 Q[:, column_index] = only_quantize(
                     weight[:, column_index].unsqueeze(1), quantizer.scale, quantizer.zero, quantizer.maxq
