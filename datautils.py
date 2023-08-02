@@ -198,3 +198,6 @@ def get_loaders(name, custom_data_path=None, nsamples=128, seed=0, seqlen=2048, 
         raise ValueError(
             f"Unable to load {name} - only wikitext2, ptb, c4 are supported."
         )
+
+def sizeof_tensor(T: torch.Tensor) -> int:
+    return T.element_size() * T.nelement()
