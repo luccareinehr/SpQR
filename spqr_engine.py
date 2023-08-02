@@ -167,11 +167,26 @@ class SPQRUtil:
                     del group_weight
 
                     # save quantization group statistics
+                    
+                    # first, re-quantize scale and zero since the default routine returns their de-quantized form
+                    scale_quantized = only_quantize(
+                        quantizer.scale,
+                        quantizer.qq_scale.scale.repeat_interleave(quantizer.qq_groupsize, dim=0),
+                        quantizer.qq_scale.zero.repeat_interleave(quantizer.qq_groupsize, dim=0),
+                        quantizer.qq_scale.maxq,
+                    )
+                    zero_quantized = only_quantize(
+                        quantizer.zero,
+                        quantizer.qq_zero.scale.repeat_interleave(quantizer.qq_groupsize, dim=0),
+                        quantizer.qq_zero.zero.repeat_interleave(quantizer.qq_groupsize, dim=0),
+                        quantizer.qq_zero.maxq,
+                    )
+
                     # to access, use: quantizers[group_index]['q']['scale'] etc.
                     # 'q' is for 1st-order statistics, 'qq' for 2nd-order statistics
                     quantizers.append(
                         {
-                            'q': {'scale': quantizer.scale, 'zero': quantizer.zero},
+                            'q': {'scale': scale_quantized, 'zero': zero_quantized},
                             'qq_scale': {'scale': quantizer.qq_scale.scale, 'zero': quantizer.qq_scale.zero},
                             'qq_zero': {'scale': quantizer.qq_zero.scale, 'zero': quantizer.qq_zero.zero},
                         }
@@ -226,12 +241,19 @@ class SPQRUtil:
             invperm = torch.argsort(perm)
             weight = weight[:, invperm]
 
+        # save outliers in CSR format
+        outliers_sparse = weight * unstructured_outlier_mask # sparse matrix with only outliers
+        outliers_csr = outliers_sparse.to_sparse_csr()
+
         return QuantizationResult(
             weight=weight,
             perm=perm,
             quantization_errors=quantization_errors,
             unstructured_outlier_threshold=unstructured_outlier_threshold,
             unstructured_outlier_mask=unstructured_outlier_mask,
+            weight_quantized=Q,
+            quantizers=quantizers,
+            outliers_csr=outliers_csr,
         )
 
     def dequantize(self, quantized_result: QuantizationResult, dtype: torch.dtype=torch.float32):
@@ -247,6 +269,11 @@ class QuantizationResult(NamedTuple):
     quantization_errors: torch.Tensor  # per-element quantization errors, defined as (weight - quantized_weight) / diag(inverse_hessian_cholesky)
     unstructured_outlier_threshold: float  # threshold on squared error increase used for determining *UNSTRUCTURED* outliers
     unstructured_outlier_mask: torch.Tensor  # bool mask where True means that this is an individual outlier
+
+    weight_quantized: torch.Tensor # quantized(weight)
+    quantizers: list # list of quantization statistics dictionaries per group
+    outliers_csr: torch.Tensor # CSR-formatted tensor object of weight outliers
+    
 
 
 def get_leave_one_out_error(group_weight: torch.Tensor, group_diag_hessian_inv_cho: torch.Tensor, *, bits, sym):
