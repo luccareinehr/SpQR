@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-
 def quantize(x, scale, zero, maxq, eps=1e-9):
     q = torch.clamp(torch.round(x / scale.clamp_min(eps) + zero), 0, maxq)
     return scale * (q - zero)
@@ -65,18 +64,19 @@ class Quantizer(nn.Module):
         else:
             x = x.flatten().unsqueeze(0)
 
-        xmin = x.min(1).values
-        xmax = x.max(1).values
+        xmin = x.min(1).values # min per line
+        xmax = x.max(1).values # max per line
 
-        if self.sym:
-            xmax = torch.maximum(torch.abs(xmin), xmax)
-            tmp = xmin < 0
-            if torch.any(tmp):
+        if self.sym: # symmetric quantization ([min of range] = -[max of range]), reduces real precision
+            xmax = torch.maximum(torch.abs(xmin), xmax) # gets absolute maximum component of x
+            tmp = xmin < 0 
+            if torch.any(tmp): # tests if any element in tmp evaluates to True
                 xmin[tmp] = -xmax[tmp]
-        tmp = xmin == xmax
-        xmin[tmp] = -1
+        tmp = (xmin == xmax)
+        xmin[tmp] = -1 # treat case where a line has the same max and min values, and default range to [-1; +1]
         xmax[tmp] = +1
 
+        # compute quantization scale and zero-point (per line!)
         self.scale = (xmax - xmin) / self.maxq
         if self.sym:
             self.zero = torch.full_like(self.scale, (self.maxq + 1) / 2)
@@ -97,7 +97,7 @@ class Quantizer(nn.Module):
             self.qq_scale.configure(self.qq_scale_bits, perchannel=True, sym=False, round_zero=False, **self.qqq_params)
             self.qq_scale.find_params(scale_groups, weight=True)
             assert self.qq_scale.scale.shape == (scale_groups.shape[0], 1), self.qq_scale.scale.shape
-            self.scale = self.qq_scale.quantize(scale_groups).reshape_as(self.scale)
+            self.scale = self.qq_scale.quantize(scale_groups).reshape_as(self.scale) # further restrict self.scale due to 2nd-order quantization
 
         if self.qq_zero_bits is not None and ((not self.round_zero) or self.qq_zero_bits < self.bits):
             zero_groups = self.zero.reshape(-1, self.qq_groupsize)

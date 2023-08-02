@@ -119,7 +119,7 @@ class SPQRUtil:
         outlier_scale = (weight.var(dim=0) / torch.diag(H_inv_cho).square()).mean().item()
         unstructured_outlier_threshold = outlier_relative_threshold * outlier_scale
         
-        in_group_index = -1  # index of current group of input features, for group quantizer purposes
+        in_group_index = -1  # index of current group (of input features, for group quantizer purposes)
 
         quantization_errors = torch.zeros_like(weight)
         unstructured_outlier_mask = torch.zeros_like(weight, dtype=torch.bool)
@@ -129,7 +129,7 @@ class SPQRUtil:
         for block_start in block_start_iter:
             block_end = min(block_start + blocksize, in_dim)
             for column_index in range(block_start, block_end):
-                if column_index % groupsize == 0:
+                if column_index % groupsize == 0: # in the first column of the group
                     # fit weight quantizer on the upcoming group of weight columns (inputs), across all rows (outputs)
                     in_group_index += 1
                     group_weight = weight[:, column_index : column_index + groupsize]
@@ -142,7 +142,7 @@ class SPQRUtil:
                         # step 1: fit quantizer on a leave-one-out version of weights, i.e. in each group, drop one weight at a time
                         assert perchannel, "refitting quantizer is only implemented for perchannel=True"
                         group_diag_hessian_inv_cho = H_inv_cho_diag[column_index : column_index + groupsize]
-                        loo_quantization_error_sq = get_leave_one_out_error(
+                        loo_quantization_error_sq = get_leave_one_out_error( # calculates the error improvement by not quantizing each weight (output: matrix with same shape as 'group_weight')
                             group_weight, group_diag_hessian_inv_cho, bits=bits, sym=sym
                         )
                         # ^-- dequantized(quantized(group_weight)) using a quantizer trained on all weights except the reconstructed one
@@ -155,8 +155,9 @@ class SPQRUtil:
                         ).clamp_min(1)
                         group_weight_without_outliers = group_weight * non_outlier_mask + mean_over_non_outliers * (
                             1 - non_outlier_mask
-                        )
-                        quantizer.find_params(group_weight_without_outliers, weight=True)
+                        ) # mean imputation to fill in where outliers are (in the group)
+                        quantizer.find_params(group_weight_without_outliers, weight=True) # find scale and zero-point for the group
+                        # quantizer.scale and quantizer.zero are calculated >per row< of the weight matrix (each row in the group of columns has a scaling factor)
                         del group_diag_hessian_inv_cho, loo_quantization_error_sq
                         del mean_over_non_outliers, group_weight_without_outliers, non_outlier_mask
 
@@ -164,8 +165,11 @@ class SPQRUtil:
 
                 weight_i_quantized = quantize(
                     weight[:, column_index].unsqueeze(1), quantizer.scale, quantizer.zero, quantizer.maxq
-                ).reshape_as(weight[:, column_index])
+                ).reshape_as(weight[:, column_index]) # quantize column using group statistics
 
+
+
+                # compute sensitivity for each weight in the column
                 delta_weight_i = weight[:, column_index] - weight_i_quantized  # [out_dim]
                 quantization_errors[:, column_index] = delta_weight_i / H_inv_cho[column_index, column_index]  # [out_dim]
 
@@ -192,13 +196,13 @@ class SPQRUtil:
                     quantization_errors[:, column_index],
                     H_inv_cho[column_index, column_index + 1 : block_end],
                     alpha=-1,
-                ) # on all subsequent columns, subtract [error]*H_inv_cho
+                ) # on all subsequent columns, subtract [error]*H_inv_cho (error correction)
 
             weight[:, block_end:].addmm_(
                 quantization_errors[:, block_start:block_end],
                 H_inv_cho[block_start:block_end, block_end:],
                 alpha=-1,
-            ) # on all subsequent blocks, subtract [error]*H_inv_cho
+            ) # on all subsequent blocks, subtract [error]*H_inv_cho (error correction)
 
         if permutation_order != "identity":
             invperm = torch.argsort(perm)
@@ -212,6 +216,8 @@ class SPQRUtil:
             unstructured_outlier_mask=unstructured_outlier_mask,
         )
 
+    def dequantize(self, quantized_result: QuantizationResult, dtype: torch.dtype=torch.float32):
+        raise NotImplementedError
 
 class QuantizationResult(NamedTuple):
     """A collection of codebooks, indices and assorted statistics produced by SPQRUtil; not memory-optimized!"""

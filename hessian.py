@@ -65,7 +65,7 @@ def hessian(model, sublayer_name, dataloader, args, device=torch.device("cpu")):
             #outs[j] = layer(inps[j].unsqueeze(0), **forward_args)[0]
             _ = layer(inps[j].unsqueeze(0), **forward_args)[0]
         except StopModelInference:
-            tqdm.write(f"Stopping inference calculation at layer {sublayer_name} in iteration {j}/{args.nsamples}")
+            tqdm.write(f"Stopping inference calculation at layer {sublayer_name} in iteration {j+1}/{args.nsamples}")
 
     for h in handles:
         h.remove()
