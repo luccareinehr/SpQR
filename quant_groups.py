@@ -1,6 +1,13 @@
 import torch
 import torch.nn as nn
 
+def only_quantize(x, scale, zero, maxq, eps=1e-9):
+    q = torch.clamp(torch.round(x / scale.clamp_min(eps) + zero), 0, maxq)
+    return q
+
+def only_dequantize(q, scale, zero):
+    return scale * (q - zero)
+
 def quantize(x, scale, zero, maxq, eps=1e-9):
     q = torch.clamp(torch.round(x / scale.clamp_min(eps) + zero), 0, maxq)
     return scale * (q - zero)

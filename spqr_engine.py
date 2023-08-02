@@ -5,7 +5,7 @@ from typing import Optional, NamedTuple, Union
 import torch
 from tqdm.auto import tqdm
 from weight_permutation import get_permutation_order
-from quant_groups import Quantizer, quantize
+from quant_groups import Quantizer, quantize, only_quantize, only_dequantize
 
 
 class SPQRUtil:
@@ -123,6 +123,7 @@ class SPQRUtil:
 
         quantization_errors = torch.zeros_like(weight)
         unstructured_outlier_mask = torch.zeros_like(weight, dtype=torch.bool)
+        Q = torch.zeros_like(weight) # weight matrix with quantized values
 
         block_start_iter = range(0, in_dim - keep_last_columns, blocksize)
         block_start_iter = tqdm(block_start_iter, leave=False) if verbose else block_start_iter
@@ -163,11 +164,13 @@ class SPQRUtil:
 
                     del group_weight
 
-                weight_i_quantized = quantize(
+                Q[:, column_index] = only_quantize(
                     weight[:, column_index].unsqueeze(1), quantizer.scale, quantizer.zero, quantizer.maxq
-                ).reshape_as(weight[:, column_index]) # quantize column using group statistics
+                ).reshape_as(weight[:, column_index]) # quantize column using group statistics (outliers get quantized too)
 
-
+                weight_i_quantized = only_dequantize(
+                    Q[:, column_index].unsqueeze(1), quantizer.scale, quantizer.zero
+                ).reshape_as(weight[:, column_index])
 
                 # compute sensitivity for each weight in the column
                 delta_weight_i = weight[:, column_index] - weight_i_quantized  # [out_dim]
