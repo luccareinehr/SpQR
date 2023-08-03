@@ -1,6 +1,7 @@
 from __future__ import annotations
 import math
-from typing import Optional, NamedTuple, Union
+from typing import Optional, Union
+from dataclasses import dataclass
 
 import torch
 from tqdm.auto import tqdm
@@ -256,10 +257,11 @@ class SPQRUtil:
             outliers_csr=outliers_csr,
         )
 
-    def dequantize(self, quantized_result: QuantizationResult, dtype: torch.dtype=torch.float32):
+    def dequantize(self, quantized_result: QuantizationResult, dtype: torch.dtype=torch.float32) -> torch.Tensor:
         raise NotImplementedError
 
-class QuantizationResult(NamedTuple):
+@dataclass
+class QuantizationResult():
     """A collection of codebooks, indices and assorted statistics produced by SPQRUtil; not memory-optimized!"""
 
     weight: torch.FloatTensor  # dequantized(quantized(weight)), same shape as the original
