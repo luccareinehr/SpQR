@@ -2,12 +2,11 @@
 To run, use: python sublayer.py (...arguments...)'''
 
 import torch
-from tqdm import trange
 
 from modelutils import get_model
 from datautils import get_loaders
 from spqr_engine import SPQRUtil
-from main import get_inps, find_sublayers, get_layers
+from main import find_sublayers
 
 if __name__ == "__main__":
     import argparse
@@ -208,11 +207,29 @@ if __name__ == "__main__":
         outlier_relative_threshold=args.outlier_threshold,
         permutation_order=args.permutation_order,
         simplified_outliers=args.simplified_outliers,
-    )
+    ) # results are given in torch.float32 (or the dtype specified in the CLI)
 
     quantized = quantization_result.weight.to(
         spqr_handler.layer.weight.data.dtype
-    ).data # FIXME: quantization_result is giving the de-quantized version of the quantized layer (thus, fp32)
+    ).data
+
+    # convert results to supported data types
+    # obs.: bit widths are not correct for weight_quantized and 1st order quantization stats
+    quantization_result.weight_quantized = quantization_result.weight_quantized.type(torch.int8) # int (wbits)
+    for quantizer in quantization_result.quantizers:
+        # 1st order: int (qq_scale_bits, qq_zero_bits)
+        for k in quantizer['q']:
+            quantizer['q'][k] = quantizer['q'][k].type(torch.int8)
+        # 2nd order: fp16
+        for k in quantizer['qq_scale']:
+            quantizer['qq_scale'][k] = quantizer['qq_scale'][k].type(torch.bfloat16)
+        for k in quantizer['qq_zero']:
+            quantizer['qq_scale'][k] = quantizer['qq_scale'][k].type(torch.bfloat16)
+    quantization_result.outliers_csr = quantization_result.outliers_csr.type(torch.float32) # outliers: fp32
+
+    # save results in file
+    quantization_result.save(f"{args.sublayer}_QuantizationResult.pt", args, format='pytorch') # save as pytorch tensors, without correct data type
+    quantization_result.save(f"{args.sublayer}_QuantizationResult.ggml", args, format='ggml') # save in ggml format
 
     # print results
     torch.set_printoptions(precision=10)

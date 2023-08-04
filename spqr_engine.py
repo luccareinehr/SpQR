@@ -1,13 +1,13 @@
 from __future__ import annotations
 import math
 from typing import Optional, Union
-from dataclasses import dataclass
 
 import torch
 from tqdm.auto import tqdm
 from weight_permutation import get_permutation_order
 from quant_groups import Quantizer, quantize, only_quantize, only_dequantize
 
+import pickle
 
 class SPQRUtil:
     """Learns GPTQ for a single linear layer"""
@@ -256,25 +256,64 @@ class SPQRUtil:
             quantizers=quantizers,
             outliers_csr=outliers_csr,
         )
+        # NOTE: the quantized data (weights, stats and outliers) are all returned permuted.
+        # Only the dequantized 'weight' tensor is inversely permuted.
+        # This means that, in inference, after the data has been dequantized, inverse permutation must be applied
+        # to get back the original matrix correctly.
+        #
+        # We can't do otherwise because quantizers are saved per group/per block, and permutation is done
+        # per column, so with more granularity.
 
     def dequantize(self, quantized_result: QuantizationResult, dtype: torch.dtype=torch.float32) -> torch.Tensor:
         raise NotImplementedError
 
-@dataclass
 class QuantizationResult():
     """A collection of codebooks, indices and assorted statistics produced by SPQRUtil; not memory-optimized!"""
+    def __init__(self,
+        weight: torch.FloatTensor,  # dequantized(quantized(weight)), same shape as the original
+        perm: Optional[torch.LongTensor],  # optional input permutation indices that were used during quantization
+        # NOTE: if permutation_order != identity, all subsequent tensors (incl. outlier indices) are permuted in that order!
 
-    weight: torch.FloatTensor  # dequantized(quantized(weight)), same shape as the original
-    perm: Optional[torch.LongTensor]  # optional input permutation indices that were used during quantization
-    # NOTE: if permutation_order != identity, all subsequent tensors (incl. outlier indices) are permuted in that order!
+        quantization_errors: torch.Tensor,  # per-element quantization errors, defined as (weight - quantized_weight) / diag(inverse_hessian_cholesky)
+        unstructured_outlier_threshold: float,  # threshold on squared error increase used for determining *UNSTRUCTURED* outliers
+        unstructured_outlier_mask: torch.Tensor,  # bool mask where True means that this is an individual outlier
 
-    quantization_errors: torch.Tensor  # per-element quantization errors, defined as (weight - quantized_weight) / diag(inverse_hessian_cholesky)
-    unstructured_outlier_threshold: float  # threshold on squared error increase used for determining *UNSTRUCTURED* outliers
-    unstructured_outlier_mask: torch.Tensor  # bool mask where True means that this is an individual outlier
+        weight_quantized: torch.Tensor, # quantized(weight)
+        quantizers: list, # list of quantization statistics dictionaries per group
+        outliers_csr: torch.Tensor, # CSR-formatted tensor object of weight outliers
+    ):
+        self.weight = weight
+        self.perm = perm
+        self.quantization_errors = quantization_errors
+        self.unstructured_outlier_threshold = unstructured_outlier_threshold
+        self.unstructured_outlier_mask = unstructured_outlier_mask
 
-    weight_quantized: torch.Tensor # quantized(weight)
-    quantizers: list # list of quantization statistics dictionaries per group
-    outliers_csr: torch.Tensor # CSR-formatted tensor object of weight outliers
+        self.weight_quantized = weight_quantized
+        self.quantizers = quantizers
+        self.outliers_csr = outliers_csr
+
+        if perm is not None:
+            print(f"CAUTION: permutation was on during quantization. Quantized results are all permuted, and must be \
+                  inversely permuted after dequantization. This affects all members of {self}, except {self}.weight.")
+
+    def save(self, filename, args, format='pytorch'):
+        if format.lower() == 'pytorch':
+            # saves without converting data types
+            with open(filename, 'wb') as wf:
+                pickle.dump(self, wf)
+
+        elif format.lower() == 'ggml':
+            # saves in correct data types (specified in args)
+            wbits = args.wbits
+            qq_scale_bits = args.qq_scale_bits
+            qq_zero_bits = args.qq_zero_bits
+
+            raise NotImplementedError
+        
+        else:
+            raise ValueError('Supported formats: pytorch, ggml')
+
+
     
 
 
