@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 import random
+import struct
+import warnings
 from transformers import AutoTokenizer, LlamaTokenizer
 from datasets import load_dataset
 
@@ -201,3 +203,47 @@ def get_loaders(name, custom_data_path=None, nsamples=128, seed=0, seqlen=2048, 
 
 def sizeof_tensor(T: torch.Tensor) -> int:
     return T.element_size() * T.nelement()
+
+one_byte = struct.calcsize("B") * 8
+
+class ValueBitlength:
+    """value with a specified length of max 8 bits"""
+    def __init__(self, val, len):
+        self.length = len
+        if self.length > one_byte:
+            raise ValueError(f"Max length supported for {self} is 1 byte.")
+
+        self.value = val & (0xff >> (8-self.length))
+        if self.value != val:
+            warnings.warn(f"Value in {self} does not fit in the specified length. Overflowing bits were removed.",
+                          stacklevel=2)
+
+def values_to_bytestream(values: list) -> bytes:
+    """converts a list of FixedLengthValue values to a bytestream"""
+    # sum lengths of all values
+    sum = 0
+    for v in values:
+        sum += v.length
+
+    if (sum % one_byte) != 0:
+        padding_bits = one_byte - (sum % one_byte)
+        warnings.warn(f"""Input list is not multiple of a byte. Manually including {padding_bits} bits of zero-padding at the end to fix.""",
+                      stacklevel=2)
+        values.append(ValueBitlength(0, padding_bits))
+
+    # create bytestream with all values in their correct bitwidth
+    value_to_pack = 0x00
+    offset = 0
+    bytestream = b''
+    for v in values:
+        value_to_pack |= (v.value << offset) & 0xff
+        offset += v.length
+
+        if offset >= one_byte:
+            bytestream += struct.pack("B", value_to_pack)
+
+            included_bits = one_byte - (offset - v.length)
+            value_to_pack = v.value >> included_bits
+            offset = v.length - included_bits
+    
+    return bytestream
