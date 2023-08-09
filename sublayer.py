@@ -222,9 +222,9 @@ if __name__ == "__main__":
             quantizer['q'][k] = quantizer['q'][k].type(torch.int8)
         # 2nd order: fp16
         for k in quantizer['qq_scale']:
-            quantizer['qq_scale'][k] = quantizer['qq_scale'][k].type(torch.bfloat16)
+            quantizer['qq_scale'][k] = quantizer['qq_scale'][k].type(torch.float16)
         for k in quantizer['qq_zero']:
-            quantizer['qq_scale'][k] = quantizer['qq_scale'][k].type(torch.bfloat16)
+            quantizer['qq_zero'][k] = quantizer['qq_zero'][k].type(torch.float16)
     quantization_result.outliers_csr = quantization_result.outliers_csr.type(torch.float32) # outliers: fp32
 
     # save results in file
