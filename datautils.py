@@ -206,8 +206,8 @@ def sizeof_tensor(T: torch.Tensor) -> int:
 
 one_byte = struct.calcsize("B") * 8
 
-class ValueBitlength:
-    """value with a specified length of max 8 bits"""
+class IntN:
+    """unsigned integer value with a specified length of max 8 bits"""
     def __init__(self, val, len):
         self.length = len
         if self.length > one_byte:
@@ -218,8 +218,8 @@ class ValueBitlength:
             warnings.warn(f"Value in {self} does not fit in the specified length. Overflowing bits were removed.",
                           stacklevel=2)
 
-def values_to_bytestream(values: list) -> bytes:
-    """converts a list of FixedLengthValue values to a bytestream"""
+def IntN_list_to_bytestream(values: list) -> bytes:
+    """converts a list of IntN values to a bytestream"""
     # sum lengths of all values
     sum = 0
     for v in values:
@@ -229,9 +229,11 @@ def values_to_bytestream(values: list) -> bytes:
         padding_bits = one_byte - (sum % one_byte)
         warnings.warn(f"""Input list is not multiple of a byte. Manually including {padding_bits} bits of zero-padding at the end to fix.""",
                       stacklevel=2)
-        values.append(ValueBitlength(0, padding_bits))
+        values.append(IntN(0, padding_bits))
 
     # create bytestream with all values in their correct bitwidth
+    # NOTE: this assumes only positive/unsigned integers!
+    # in SpQR code, all values are actually quantized to "uint", so it's ok!
     value_to_pack = 0x00
     offset = 0
     bytestream = b''
@@ -247,3 +249,13 @@ def values_to_bytestream(values: list) -> bytes:
             offset = v.length - included_bits
     
     return bytestream
+
+def tensor_to_IntN_list(T: torch.Tensor, bitwidth: int):
+    """converts a PyTorch tensor to a list of IntN values"""
+    if T.dtype in (torch.float16, torch.bfloat16, torch.float32):
+        raise ValueError(f"Cannot convert float Tensor to list of fixed bitwidth integers.")
+    
+    array_to_IntN = np.vectorize(lambda x : IntN(x, bitwidth))
+    integer_array = array_to_IntN(T.numpy())
+
+    return list(integer_array)
