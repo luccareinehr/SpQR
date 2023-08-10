@@ -1,13 +1,17 @@
 from __future__ import annotations
 import math
-from typing import Optional, Union
+from typing import Optional, Union, NamedTuple
 
 import torch
 from tqdm.auto import tqdm
 from weight_permutation import get_permutation_order
 from quant_groups import Quantizer, quantize, only_quantize, only_dequantize
 
-import pickle
+from datautils import IntN, tensor_to_IntN_list, IntN_list_to_bytestream
+
+import pickle, struct
+import numpy as np
+from tqdm import trange
 
 class SPQRUtil:
     """Learns GPTQ for a single linear layer"""
@@ -242,6 +246,8 @@ class SPQRUtil:
             invperm = torch.argsort(perm)
             weight = weight[:, invperm]
 
+            print(f"CAUTION: permutation was on during quantization. Quantized results are all permuted, and must be inversely permuted after dequantization. This affects all members of {self}, except {self}.weight.")
+
         # save outliers in CSR format
         outliers_sparse = weight * unstructured_outlier_mask # sparse matrix with only outliers
         outliers_csr = outliers_sparse.to_sparse_csr()
@@ -291,12 +297,9 @@ class QuantizationResult():
         self.weight_quantized = weight_quantized
         self.quantizers = quantizers
         self.outliers_csr = outliers_csr
-
-        if perm is not None:
-            print(f"CAUTION: permutation was on during quantization. Quantized results are all permuted, and must be \
-                  inversely permuted after dequantization. This affects all members of {self}, except {self}.weight.")
-
+            
     def save(self, filename, args, format='pytorch'):
+        """saves single spqr-quantized matrix"""
         if format.lower() == 'pytorch':
             # saves without converting data types
             with open(filename, 'wb') as wf:
@@ -304,17 +307,95 @@ class QuantizationResult():
 
         elif format.lower() == 'ggml':
             # saves in correct data types (specified in args)
+            if args.permutation_order != "identity":
+                raise TypeError('ggml format does not currently support permutation')
+            
+            GGML_TYPE_SPQR = 99 # NOTE: not final
+
             wbits = args.wbits
             qq_scale_bits = args.qq_scale_bits
             qq_zero_bits = args.qq_zero_bits
 
-            raise NotImplementedError
+            groupsize = args.groupsize
+            qq_groupsize = args.qq_groupsize
+
+            dims = self.weight_quantized.shape
+            ftype = GGML_TYPE_SPQR
+            matrix_name = args.sublayer.encode('utf-8')
+
+            with open(filename, "wb") as wf:
+                # header
+                wf.write(struct.pack("iii", len(dims), len(matrix_name), ftype)) # n_dims, len(matrix_name), ftype
+                for dim in dims: wf.write(struct.pack("i", dim)) # dim1, ..., dimN 
+                wf.write(matrix_name) # matrix_name
+
+                # data
+                for group in trange(
+                    dims[1]//groupsize, desc="saving quantized matrix and stats", leave=False
+                    ):
+                    for block in range(dims[0]//qq_groupsize):
+                        blocklines = []
+                        for line in range(block*qq_groupsize, block*qq_groupsize + qq_groupsize): # line indices in the block
+                            blocklines.append(
+                                SPQRBlockLine(
+                                    scale=IntN(self.quantizers[group]['q']['scale'][line].item(), qq_scale_bits),
+                                    zero=IntN(self.quantizers[group]['q']['zero'][line].item(), qq_zero_bits),
+                                    weights=tensor_to_IntN_list(self.weight_quantized[line, group*groupsize:(group*groupsize + groupsize)], wbits)
+                                )
+                            )
+                        this_block =  SPQRBlock(
+                                qq_scale4scales=self.quantizers[group]['qq_scale']['scale'][block].numpy(), # must be in numpy to save in fp16
+                                qq_zero4scales=self.quantizers[group]['qq_scale']['zero'][block].numpy(),
+                                qq_scale4zeros=self.quantizers[group]['qq_zero']['scale'][block].numpy(),
+                                qq_zero4zeros=self.quantizers[group]['qq_zero']['zero'][block].numpy(),
+                                blocklines=blocklines
+                            )
+                        # save data to file
+                        this_block.qq_scale4scales.tofile(wf)
+                        this_block.qq_zero4scales.tofile(wf)
+                        this_block.qq_scale4zeros.tofile(wf)
+                        this_block.qq_zero4zeros.tofile(wf)
+                        concatenated_blocklines = []
+                        for blockline in this_block.blocklines:
+                            concatenated_blocklines += [blockline.scale, blockline.zero] + blockline.weights
+                        wf.write(IntN_list_to_bytestream(concatenated_blocklines)) # NOTE: this gets padded with zeros
+
+                # outliers
+                crow_indices = self.outliers_csr.crow_indices().numpy().astype(np.uint32) # uint32
+                col_indices = self.outliers_csr.col_indices().numpy().astype(np.uint16) # uint16
+                outlier_values = self.outliers_csr.values().numpy().astype(np.float16) # fp16
+
+                print(f"saving sparse outliers, starting at pos {hex(wf.tell())} in file")
+                for row in trange(
+                    dims[0], desc=f"saving sparse outliers", leave=False
+                    ):
+                    total_no_previous_outliers = crow_indices[row:row+1]
+                    total_no_previous_outliers.tofile(wf)
+
+                    outliers_in_row = outlier_values[crow_indices[row]:crow_indices[row+1]]
+                    col_indices_in_row = col_indices[crow_indices[row]:crow_indices[row+1]]
+                    for i in range(len(outliers_in_row)):
+                        outlier = outliers_in_row[i]
+                        col_idx = col_indices_in_row[i]
+                        outlier.tofile(wf)
+                        col_idx.tofile(wf)
+                crow_indices[-1].tofile(wf) # last crow value
         
         else:
             raise ValueError('Supported formats: pytorch, ggml')
 
+class SPQRBlock:
+    def __init__(self, qq_scale4scales, qq_zero4scales, qq_scale4zeros, qq_zero4zeros, blocklines: list):
+        self.qq_scale4scales = qq_scale4scales # numpy fp16
+        self.qq_zero4scales = qq_zero4scales # numpy fp16
+        self.qq_scale4zeros = qq_scale4zeros # numpy fp16
+        self.qq_zero4zeros = qq_zero4zeros # numpy fp16
+        self.blocklines = blocklines # default: list of SPQRBlockLine objects
 
-    
+class SPQRBlockLine(NamedTuple):
+    scale: IntN
+    zero: IntN
+    weights: list
 
 
 def get_leave_one_out_error(group_weight: torch.Tensor, group_diag_hessian_inv_cho: torch.Tensor, *, bits, sym):

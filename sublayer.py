@@ -225,7 +225,7 @@ if __name__ == "__main__":
             quantizer['qq_scale'][k] = quantizer['qq_scale'][k].type(torch.float16)
         for k in quantizer['qq_zero']:
             quantizer['qq_zero'][k] = quantizer['qq_zero'][k].type(torch.float16)
-    quantization_result.outliers_csr = quantization_result.outliers_csr.type(torch.float32) # outliers: fp32
+    quantization_result.outliers_csr = quantization_result.outliers_csr.type(torch.float16) # outliers: fp16
 
     # save results in file
     quantization_result.save(f"{args.sublayer}_QuantizationResult.pt", args, format='pytorch') # save as pytorch tensors, without correct data type
@@ -239,7 +239,7 @@ if __name__ == "__main__":
     print("Save results? [y/N]")
     if input().lower() in ("yes", "y"):
         torch.save(not_quantized, f"{args.sublayer}_not_quantized.pt")
-        torch.save(quantized, f"{args.sublayer}_not_quantized.pt")
+        torch.save(quantized, f"{args.sublayer}_quantized.pt")
         # TODO: this is not saving the outliers in CSR format,
         # neither the 1st- and 2nd-order group statistics
         # TODO: this is not saving in memory using the correct structure
